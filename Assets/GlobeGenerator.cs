@@ -48,10 +48,12 @@ namespace GlobalExpansion.Globe
 
         [Header("颜色")]
         [SerializeField] private Color baseSphereColor = new Color(0.12f, 0.14f, 0.20f);
-        [SerializeField] private Color triangleColor = new Color(0.20f, 0.45f, 0.55f);
         [SerializeField] private Color hexColor = new Color(0.32f, 0.36f, 0.42f);
         [SerializeField] private Color pentagonColor = new Color(0.90f, 0.60f, 0.22f);
-        [SerializeField] private Color edgeColor = new Color(0.05f, 0.06f, 0.08f);
+        [Tooltip("三角面网的边线颜色（亮色，才能在深色球面上看清）。")]
+        [SerializeField] private Color triangleEdgeColor = new Color(0.55f, 0.85f, 0.95f);
+        [Tooltip("格子边框颜色（暗色，衬在浅色格子上）。")]
+        [SerializeField] private Color cellBorderColor = new Color(0.05f, 0.06f, 0.08f);
 
         [Header("调试")]
         [Tooltip("生成后打印拓扑校验结果（五边形数量、邻居数、双向性等）。")]
@@ -68,7 +70,8 @@ namespace GlobalExpansion.Globe
         private Transform _cellsRoot;
 
         // --- 运行时材质 ---
-        private Material _lineMaterial;
+        private Material _triangleEdgeMaterial;
+        private Material _cellBorderMaterial;
 
         // --- 结果 ---
         private readonly List<GlobeCellData> _cells = new List<GlobeCellData>();
@@ -200,37 +203,20 @@ namespace GlobalExpansion.Globe
         }
 
         // ============================================================
-        // 图层 B：三角面网（每面独立顶点 → 平面着色）+ 边线
+        // 图层 B：三角面网的边线（衬在基底球体表面上）
         // ============================================================
         private void BuildTriangleLayer()
         {
-            int indexCount = _icoFaces.Count;
-            Vector3[] verts = new Vector3[indexCount];
-            int[] tris = new int[indexCount];
-            for (int i = 0; i < indexCount; i++)
-            {
-                verts[i] = _positions[_icoFaces[i]];
-                tris[i] = i; // 不共享顶点，得到平面法线
-            }
-
-            Mesh mesh = new Mesh { name = "IcosphereTriangles", indexFormat = IndexFormat.UInt32 };
-            mesh.SetVertices(verts);
-            mesh.SetTriangles(tris, 0);
-            mesh.RecalculateNormals();
-            mesh.RecalculateBounds();
-
-            CreateMeshObject("Triangles", _trianglesRoot, mesh, triangleColor);
-
-            // 三角边线：从所有三角形的边收集去重
+            // 三角边线：从所有三角形的边收集去重，紧贴基底球面之上
             HashSet<long> edgeSet = new HashSet<long>();
-            List<int> lineIndices = new List<int>(indexCount * 2);
+            List<int> lineIndices = new List<int>(_icoFaces.Count * 2);
             for (int f = 0; f < _icoFaces.Count; f += 3)
             {
                 AddUniqueEdge(edgeSet, lineIndices, _icoFaces[f], _icoFaces[f + 1]);
                 AddUniqueEdge(edgeSet, lineIndices, _icoFaces[f + 1], _icoFaces[f + 2]);
                 AddUniqueEdge(edgeSet, lineIndices, _icoFaces[f + 2], _icoFaces[f]);
             }
-            BuildEdgeLines("TriangleEdges", _trianglesRoot, _positions, lineIndices, 1.002f);
+            BuildEdgeLines("TriangleEdges", _trianglesRoot, _positions, lineIndices, 1.002f, _triangleEdgeMaterial);
         }
 
         private static void AddUniqueEdge(HashSet<long> set, List<int> indices, int a, int b)
@@ -316,7 +302,7 @@ namespace GlobalExpansion.Globe
                 AppendCellBorder(borderVerts, borderLineIndices, corners, radius * (cellRadiusScale + 0.001f) / cellRadius);
             }
 
-            BuildEdgeLines("CellBorders", _cellsRoot, borderVerts, borderLineIndices, 1f);
+            BuildEdgeLines("CellBorders", _cellsRoot, borderVerts, borderLineIndices, 1f, _cellBorderMaterial);
         }
 
         private static void AddNeighbor(HashSet<int>[] neighbors, int a, int b)
@@ -421,7 +407,7 @@ namespace GlobalExpansion.Globe
             SetRendererColor(mr, color);
         }
 
-        private void BuildEdgeLines(string name, Transform parent, IList<Vector3> verts, List<int> indices, float lift)
+        private void BuildEdgeLines(string name, Transform parent, IList<Vector3> verts, List<int> indices, float lift, Material material)
         {
             if (indices.Count == 0)
                 return;
@@ -439,7 +425,7 @@ namespace GlobalExpansion.Globe
             go.transform.SetParent(parent, false);
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             MeshRenderer mr = go.AddComponent<MeshRenderer>();
-            mr.sharedMaterial = _lineMaterial;
+            mr.sharedMaterial = material;
         }
 
         private Transform CreateLayerRoot(string name)
@@ -457,8 +443,12 @@ namespace GlobalExpansion.Globe
         // ============================================================
         public void ApplyDisplayMode()
         {
+            // 三角面网模式也显示基底球体，作为边线贴合的实心衬底
+            bool showBaseSphere = displayMode == GlobeDisplayMode.BaseSphere
+                                  || displayMode == GlobeDisplayMode.IcosphereTriangles;
+
             if (_baseSphereRoot != null)
-                _baseSphereRoot.gameObject.SetActive(displayMode == GlobeDisplayMode.BaseSphere);
+                _baseSphereRoot.gameObject.SetActive(showBaseSphere);
             if (_trianglesRoot != null)
                 _trianglesRoot.gameObject.SetActive(displayMode == GlobeDisplayMode.IcosphereTriangles);
             if (_cellsRoot != null)
@@ -487,15 +477,21 @@ namespace GlobalExpansion.Globe
                 surfaceMaterial = new Material(shader) { name = "GlobeSurface (auto)" };
             }
 
-            if (_lineMaterial == null)
-            {
-                Shader lineShader = Shader.Find("Universal Render Pipeline/Unlit");
-                if (lineShader == null) lineShader = Shader.Find("Unlit/Color");
-                if (lineShader == null) lineShader = Shader.Find("Sprites/Default");
-                _lineMaterial = new Material(lineShader) { name = "GlobeEdges (auto)" };
-                _lineMaterial.SetColor("_BaseColor", edgeColor);
-                _lineMaterial.SetColor("_Color", edgeColor);
-            }
+            if (_triangleEdgeMaterial == null)
+                _triangleEdgeMaterial = CreateUnlitMaterial("TriangleEdges (auto)", triangleEdgeColor);
+            if (_cellBorderMaterial == null)
+                _cellBorderMaterial = CreateUnlitMaterial("CellBorders (auto)", cellBorderColor);
+        }
+
+        private static Material CreateUnlitMaterial(string name, Color color)
+        {
+            Shader lineShader = Shader.Find("Universal Render Pipeline/Unlit");
+            if (lineShader == null) lineShader = Shader.Find("Unlit/Color");
+            if (lineShader == null) lineShader = Shader.Find("Sprites/Default");
+            Material mat = new Material(lineShader) { name = name };
+            mat.SetColor("_BaseColor", color);
+            mat.SetColor("_Color", color);
+            return mat;
         }
 
         private static void SetRendererColor(Renderer r, Color color)
