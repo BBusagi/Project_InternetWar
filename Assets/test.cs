@@ -2,92 +2,83 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 
 /// <summary>
-/// POC 第一步：用鼠标控制球型地图。
+/// POC 阶段的球体交互控制器。
 /// 遵循设计文档规则：旋转球体（GlobeRoot），而不是相机；
-/// 使用相机空间的轴 + 四元数，避免万向锁与极点锁定。
+/// 使用相机空间的轴 + 四元数，避免万向锁与极点锁定；相机始终注视球心。
 ///
-/// 使用方法：把本脚本挂到球体（或 GlobeRoot）上即可。
+/// 使用方法：把本脚本挂到 GlobeRoot（会旋转的根节点）上。
 /// - 按住鼠标左键拖动：旋转球体
 /// - 松开后：惯性继续旋转并逐渐停下
-/// - 鼠标滚轮：拉近 / 拉远相机（不缩放球体）
+/// - 鼠标滚轮：拉近 / 拉远相机（改变相机距离，不缩放球体）
 /// </summary>
 public class test : MonoBehaviour
 {
-    [Header("目标")]
-    [Tooltip("要旋转的球体根节点。留空则默认使用本物体 (this.transform)。")]
+    // ============================================================
+    // Inspector 字段
+    // ============================================================
+    [Header("Target")]
+    [Tooltip("Globe root to rotate. Leave empty to use this transform.")]
     [SerializeField] private Transform globeRoot;
 
-    [Tooltip("使用的相机。留空则默认使用 Camera.main。")]
+    [Tooltip("Camera used for interaction. Leave empty to use Camera.main.")]
     [SerializeField] private Camera targetCamera;
 
-    [Header("旋转")]
-    [Tooltip("鼠标拖动的旋转灵敏度（度 / 像素）。")]
-    [SerializeField] private float rotationSpeed = 0.2f;
+    [Header("Rotation")]
+    [Tooltip("Drag rotation sensitivity in degrees per pixel.")]
+    [SerializeField] private float rotationSpeed = 0.1f;
 
-    [Header("惯性")]
-    [Tooltip("松手后惯性衰减速度，越大停得越快。")]
-    [SerializeField] private float inertiaDamping = 5f;
+    [Header("Inertia")]
+    [Tooltip("Higher value stops the spin sooner after release.")]
+    [SerializeField] private float inertiaDamping = 6f;
 
-    [Tooltip("角速度低于该值（度/秒）时直接停止，避免长时间微小抖动。")]
+    [Tooltip("Stop spinning below this angular speed (deg/sec) to avoid jitter.")]
     [SerializeField] private float minInertiaSpeed = 1f;
 
-    [Header("缩放")]
-    [Tooltip("滚轮缩放灵敏度。")]
-    [SerializeField] private float zoomSpeed = 2f;
+    [Header("Zoom")]
+    [Tooltip("Mouse wheel zoom sensitivity.")]
+    [SerializeField] private float zoomSpeed = 1f;
 
-    [Tooltip("缩放范围相对初始距离的倍数。例如初始距离 20，则可缩放到 20*0.4 ~ 20*2.5。")]
+    [Tooltip("Zoom range as a multiple of the initial camera distance.")]
     [SerializeField] private float minDistanceFactor = 0.4f;
     [SerializeField] private float maxDistanceFactor = 2.5f;
 
-    // 运行时根据初始相机距离推算出的实际缩放范围
-    private float minDistance;
-    private float maxDistance;
-
-    [Tooltip("相机距离平滑插值速度。")]
+    [Tooltip("Camera distance smoothing speed.")]
     [SerializeField] private float zoomSmooth = 10f;
 
+    // ============================================================
+    // 运行时状态
+    // ============================================================
     // 拖动状态
-    private bool isDragging;
+    private bool _isDragging;
 
-    // 惯性：绕世界空间某轴的角速度（度/秒），方向为轴、大小为角速度。
-    private Vector3 angularVelocity;
+    // 惯性：绕世界空间某轴的角速度，方向为轴、大小为角速度（度/秒）
+    private Vector3 _angularVelocity;
 
-    // 缩放：以球心为参考的目标距离
-    private float targetDistance;
+    // 缩放：相对球心的目标距离，以及由初始距离推算出的范围
+    private float _targetDistance;
+    private float _minDistance;
+    private float _maxDistance;
 
+    // ============================================================
+    // Unity 生命周期
+    // ============================================================
     private void Awake()
     {
         if (globeRoot == null)
             globeRoot = transform;
-
         if (targetCamera == null)
             targetCamera = Camera.main;
     }
 
     private void Start()
     {
-        if (targetCamera != null)
-        {
-            // 直接采用你在场景里摆好的初始相机距离，不做强制钳制，避免相机第一帧被拉走
-            Vector3 toCam = targetCamera.transform.position - globeRoot.position;
-            float initialDistance = toCam.magnitude;
-            targetDistance = initialDistance;
-
-            // 缩放范围围绕初始距离自动推算，尊重你的场景设置
-            minDistance = initialDistance * minDistanceFactor;
-            maxDistance = initialDistance * maxDistanceFactor;
-        }
+        InitZoomRange();
     }
 
     private void Update()
     {
-        if (targetCamera == null)
-        {
-            // 相机可能在运行时才创建，尝试补获取一次
-            targetCamera = Camera.main;
-            if (targetCamera == null)
-                return;
-        }
+        if (!EnsureCamera())
+            return;
 
         Mouse mouse = Mouse.current;
         if (mouse == null)
@@ -97,74 +88,92 @@ public class test : MonoBehaviour
         HandleZoom(mouse);
     }
 
+    private void LateUpdate()
+    {
+        // 相机始终注视球心（相机只做径向缩放，不独立环绕）
+        if (targetCamera != null && globeRoot != null)
+            targetCamera.transform.LookAt(globeRoot.position);
+    }
+
+    // ============================================================
+    // 旋转 + 惯性
+    // ============================================================
     private void HandleRotation(Mouse mouse)
     {
         if (mouse.leftButton.wasPressedThisFrame)
         {
-            isDragging = true;
-            angularVelocity = Vector3.zero; // 抓住球体时清除惯性
+            _isDragging = true;
+            _angularVelocity = Vector3.zero; // 抓住球体时清除惯性
         }
 
         if (mouse.leftButton.wasReleasedThisFrame)
-        {
-            isDragging = false;
-        }
+            _isDragging = false;
 
-        if (isDragging)
-        {
-            Vector2 delta = mouse.delta.ReadValue();
-
-            if (delta.sqrMagnitude > 0f)
-            {
-                // 旋转轴来自相机，而不是固定世界轴——保证拖动方向在任意旋转后仍然直观
-                Vector3 camUp = targetCamera.transform.up;
-                Vector3 camRight = targetCamera.transform.right;
-
-                // 水平移动 → 绕相机 up 轴；垂直移动 → 绕相机 right 轴
-                float yaw = -delta.x * rotationSpeed;
-                float pitch = delta.y * rotationSpeed;
-
-                Quaternion deltaRot =
-                    Quaternion.AngleAxis(yaw, camUp) *
-                    Quaternion.AngleAxis(pitch, camRight);
-
-                // 新的相机空间旋转叠加在当前旋转之前，保持拖动方向一致
-                globeRoot.rotation = deltaRot * globeRoot.rotation;
-
-                // 记录角速度供松手后的惯性使用
-                deltaRot.ToAngleAxis(out float angle, out Vector3 axis);
-                if (angle > 180f) angle -= 360f; // 归一化到 [-180,180]
-                if (Time.deltaTime > 0f && !float.IsInfinity(axis.x))
-                {
-                    angularVelocity = axis * (angle / Time.deltaTime);
-                }
-            }
-            else
-            {
-                angularVelocity = Vector3.zero; // 停住不动
-            }
-        }
-        else
+        if (!_isDragging)
         {
             ApplyInertia();
+            return;
         }
+
+        Vector2 delta = mouse.delta.ReadValue();
+        if (delta.sqrMagnitude <= 0f)
+        {
+            _angularVelocity = Vector3.zero; // 停住不动
+            return;
+        }
+
+        // 旋转轴来自相机，而不是固定世界轴——保证拖动方向在任意旋转后仍然直观
+        Vector3 camUp = targetCamera.transform.up;
+        Vector3 camRight = targetCamera.transform.right;
+
+        // 水平移动 → 绕相机 up 轴；垂直移动 → 绕相机 right 轴
+        float yaw = -delta.x * rotationSpeed;
+        float pitch = delta.y * rotationSpeed;
+
+        Quaternion deltaRot =
+            Quaternion.AngleAxis(yaw, camUp) *
+            Quaternion.AngleAxis(pitch, camRight);
+
+        // 新的相机空间旋转叠加在当前旋转之前，保持拖动方向一致
+        globeRoot.rotation = deltaRot * globeRoot.rotation;
+
+        // 记录角速度供松手后的惯性使用
+        deltaRot.ToAngleAxis(out float angle, out Vector3 axis);
+        if (angle > 180f) angle -= 360f; // 归一化到 [-180,180]
+        if (Time.deltaTime > 0f && !float.IsInfinity(axis.x))
+            _angularVelocity = axis * (angle / Time.deltaTime);
     }
 
     private void ApplyInertia()
     {
-        float speed = angularVelocity.magnitude;
+        float speed = _angularVelocity.magnitude;
         if (speed <= minInertiaSpeed)
         {
-            angularVelocity = Vector3.zero;
+            _angularVelocity = Vector3.zero;
             return;
         }
 
         // 继续按当前角速度旋转
-        Vector3 axis = angularVelocity / speed;
+        Vector3 axis = _angularVelocity / speed;
         globeRoot.rotation = Quaternion.AngleAxis(speed * Time.deltaTime, axis) * globeRoot.rotation;
 
         // 帧率无关的指数衰减
-        angularVelocity *= Mathf.Exp(-inertiaDamping * Time.deltaTime);
+        _angularVelocity *= Mathf.Exp(-inertiaDamping * Time.deltaTime);
+    }
+
+    // ============================================================
+    // 缩放（改变相机距离，不缩放球体）
+    // ============================================================
+    private void InitZoomRange()
+    {
+        if (targetCamera == null)
+            return;
+
+        // 直接采用你在场景里摆好的初始相机距离，不做强制钳制，避免相机第一帧被拉走
+        float initialDistance = Vector3.Distance(targetCamera.transform.position, globeRoot.position);
+        _targetDistance = initialDistance;
+        _minDistance = initialDistance * minDistanceFactor;
+        _maxDistance = initialDistance * maxDistanceFactor;
     }
 
     private void HandleZoom(Mouse mouse)
@@ -173,17 +182,34 @@ public class test : MonoBehaviour
         if (Mathf.Abs(scroll) > 0.01f)
         {
             // scroll 一般是 ±120 的步进，除以 120 归一化
-            targetDistance -= (scroll / 120f) * zoomSpeed;
-            targetDistance = Mathf.Clamp(targetDistance, minDistance, maxDistance);
+            _targetDistance -= (scroll / 120f) * zoomSpeed;
+            _targetDistance = Mathf.Clamp(_targetDistance, _minDistance, _maxDistance);
         }
 
-        // 平滑地把相机移动到目标距离（改变相机距离，而不是缩放球体）
+        // 沿"球心→相机"方向平滑移动相机到目标距离
         Transform camT = targetCamera.transform;
         Vector3 dir = (camT.position - globeRoot.position).normalized;
         if (dir.sqrMagnitude < 0.0001f)
             dir = -camT.forward; // 兜底方向
 
-        Vector3 desiredPos = globeRoot.position + dir * targetDistance;
+        Vector3 desiredPos = globeRoot.position + dir * _targetDistance;
         camT.position = Vector3.Lerp(camT.position, desiredPos, 1f - Mathf.Exp(-zoomSmooth * Time.deltaTime));
+    }
+
+    // ============================================================
+    // 工具
+    // ============================================================
+    private bool EnsureCamera()
+    {
+        if (targetCamera != null)
+            return true;
+
+        // 相机可能在运行时才创建，尝试补获取一次
+        targetCamera = Camera.main;
+        if (targetCamera == null)
+            return false;
+
+        InitZoomRange();
+        return true;
     }
 }

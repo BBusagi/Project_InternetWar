@@ -22,41 +22,41 @@ namespace GlobalExpansion.Globe
     /// </summary>
     public class GlobeGenerator : MonoBehaviour
     {
-        [Header("生成参数")]
-        [Tooltip("细分级别。3 → 642 格；2 → 162 格（早期技术测试用）。")]
+        [Header("Generation")]
+        [Tooltip("Subdivision level. 3 -> 642 cells; 2 -> 162 cells (early tech test).")]
         [SerializeField, Range(0, 5)] private int subdivisions = 3;
 
-        [Tooltip("球体半径（本地空间）。应与场景里基础球体的半径一致。")]
+        [Tooltip("Sphere radius in local space. Should match the scene base sphere radius.")]
         [SerializeField] private float radius = 10f;
 
-        [Tooltip("格子相对球半径的抬高倍数，避免与底层图层 Z-fighting。")]
+        [Tooltip("Cell radius scale above the sphere radius, to avoid Z-fighting with lower layers.")]
         [SerializeField] private float cellRadiusScale = 1.01f;
 
-        [Header("可视化")]
-        [Tooltip("显示哪一层：基底球体 / 三角面网 / 对偶格子。运行时也可切换。")]
+        [Header("Visualization")]
+        [Tooltip("Which layer to show: base sphere / triangle net / dual cells. Switchable at runtime.")]
         [SerializeField] private GlobeDisplayMode displayMode = GlobeDisplayMode.DualCells;
 
-        [Tooltip("是否显示边线（三角边 / 格子边框）。")]
+        [Tooltip("Show edge lines (triangle edges / cell borders).")]
         [SerializeField] private bool showEdges = true;
 
-        [Header("挂载 / 材质")]
-        [Tooltip("图层的父物体。留空则用本物体（应为 GlobeRoot）。")]
+        [Header("Mount / Material")]
+        [Tooltip("Parent for the layers. Leave empty to use this transform (should be GlobeRoot).")]
         [SerializeField] private Transform cellParent;
 
-        [Tooltip("表面共用材质。留空则自动创建 URP 材质。")]
+        [Tooltip("Shared surface material. Leave empty to auto-create a URP material.")]
         [SerializeField] private Material surfaceMaterial;
 
-        [Header("颜色")]
+        [Header("Colors")]
         [SerializeField] private Color baseSphereColor = new Color(0.12f, 0.14f, 0.20f);
         [SerializeField] private Color hexColor = new Color(0.32f, 0.36f, 0.42f);
         [SerializeField] private Color pentagonColor = new Color(0.90f, 0.60f, 0.22f);
-        [Tooltip("三角面网的边线颜色（亮色，才能在深色球面上看清）。")]
+        [Tooltip("Triangle net edge color (bright, so it reads on the dark sphere).")]
         [SerializeField] private Color triangleEdgeColor = new Color(0.55f, 0.85f, 0.95f);
-        [Tooltip("格子边框颜色（暗色，衬在浅色格子上）。")]
+        [Tooltip("Cell border color (dark, against the light cells).")]
         [SerializeField] private Color cellBorderColor = new Color(0.05f, 0.06f, 0.08f);
 
-        [Header("调试")]
-        [Tooltip("生成后打印拓扑校验结果（五边形数量、邻居数、双向性等）。")]
+        [Header("Debug")]
+        [Tooltip("Log topology validation (pentagon count, neighbor counts, bidirectionality) after generation.")]
         [SerializeField] private bool validateTopology = true;
 
         // --- 生成中间数据 ---
@@ -112,6 +112,15 @@ namespace GlobalExpansion.Globe
 
             if (validateTopology)
                 ValidateTopology();
+        }
+
+        [ContextMenu("Clear")]
+        public void Clear()
+        {
+            if (cellParent == null)
+                cellParent = transform;
+            ClearExistingLayers();
+            _cells.Clear();
         }
 
         // ============================================================
