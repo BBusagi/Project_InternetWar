@@ -77,6 +77,9 @@ namespace GlobalExpansion.Globe
         private readonly List<GlobeCellData> _cells = new List<GlobeCellData>();
         public IReadOnlyList<GlobeCellData> Cells => _cells;
 
+        private readonly List<GlobeCellView> _cellViews = new List<GlobeCellView>();
+        public IReadOnlyList<GlobeCellView> CellViews => _cellViews;
+
         private void Start()
         {
             Generate();
@@ -246,6 +249,7 @@ namespace GlobalExpansion.Globe
         private void BuildDualCells()
         {
             _cells.Clear();
+            _cellViews.Clear();
 
             int vertexCount = _positions.Count;
             int faceCount = _icoFaces.Count / 3;
@@ -379,6 +383,7 @@ namespace GlobalExpansion.Globe
             GlobeCellView view = go.AddComponent<GlobeCellView>();
             view.Initialize(data, mesh, surfaceMaterial);
             view.SetColor(data.CellType == CellType.Pentagon ? pentagonColor : hexColor);
+            _cellViews.Add(view);
         }
 
         /// <summary>用中心 + 角点构建三角扇网格（本地空间）。</summary>

@@ -6,15 +6,14 @@ using GlobalExpansion.Globe;
 /// <summary>
 /// POC 阶段的球体交互控制器。
 /// 遵循设计文档规则：旋转球体（GlobeRoot），而不是相机；
-/// 使用相机空间的轴 + 四元数，避免万向锁与极点锁定；相机始终注视球心。
+/// 使用相机空间的轴 + 四元数，避免万向锁与极点锁定；相机保持初始注视角度。
 ///
 /// 使用方法：把本脚本挂到 GlobeRoot（会旋转的根节点）上。
-/// - 按住鼠标右键拖动：旋转球体
-/// - 松开右键后：惯性继续旋转并逐渐停下
-/// - 鼠标左键点击格子：切换选中（变色 / 恢复）
+/// - 按住鼠标右键拖动：旋转球体（松开即停；松手惯性为 TODO，未来再做）
+/// - 鼠标左键点击格子：切换占领（变蓝 / 恢复）
 /// - 鼠标滚轮：拉近 / 拉远相机（改变相机距离，不缩放球体）
 /// </summary>
-public class test : MonoBehaviour
+public class GlobeInputController : MonoBehaviour
 {
     // ============================================================
     // Inspector 字段
@@ -29,13 +28,7 @@ public class test : MonoBehaviour
     [Header("Rotation")]
     [Tooltip("Drag rotation sensitivity in degrees per pixel.")]
     [SerializeField] private float rotationSpeed = 0.1f;
-
-    [Header("Inertia")]
-    [Tooltip("Higher value stops the spin sooner after release.")]
-    [SerializeField] private float inertiaDamping = 6f;
-
-    [Tooltip("Stop spinning below this angular speed (deg/sec) to avoid jitter.")]
-    [SerializeField] private float minInertiaSpeed = 1f;
+    // TODO: 松手后的旋转惯性（指数阻尼）——未来再做，先移除以保持简单。
 
     [Header("Zoom")]
     [Tooltip("Mouse wheel zoom sensitivity.")]
@@ -48,19 +41,16 @@ public class test : MonoBehaviour
     [Tooltip("Camera distance smoothing speed.")]
     [SerializeField] private float zoomSmooth = 10f;
 
-    [Tooltip("Extra look-tilt added per zoom step, in degrees. 0 keeps the constant initial offset.")]
+    [Tooltip("Extra look-tilt added per zoom step, in degrees. Negative reverses the direction; 0 disables it.")]
     [Range(-10.0f, 10.0f)]
     [SerializeField] private float zoomTiltDelta = 1f;
 
     [Header("Selection")]
-    [Tooltip("Color applied to a cell while it is selected. Click again to restore.")]
-    [SerializeField] private Color selectedColor = new Color(0.20f, 0.50f, 1f);
+    [Tooltip("Expansion controller that owns occupation. Auto-found if left empty.")]
+    [SerializeField] private GlobeExpansionController expansion;
 
-    [Tooltip("Pixel movement above which a press becomes a drag instead of a click.")]
+    [Tooltip("Pixel movement above which a left press counts as a drag, not a click.")]
     [SerializeField] private float dragThreshold = 8f;
-
-    [Tooltip("Log click / raycast details to the Console for debugging selection.")]
-    [SerializeField] private bool debugClicks = true;
 
     // ============================================================
     // 运行时状态
@@ -73,12 +63,8 @@ public class test : MonoBehaviour
     private bool _isDragging;
     private Vector2 _pointerDownPos;
 
-    // 左键按下时是否命中球体（格子），以及命中的格子（用于点击选择）
-    private bool _pressedOnCell;
+    // 左键按下时命中的格子（用于松手时判定点击选择）
     private GlobeCellView _pressedCell;
-
-    // 惯性：绕世界空间某轴的角速度，方向为轴、大小为角速度（度/秒）
-    private Vector3 _angularVelocity;
 
     // 缩放：相对球心的目标距离，以及由初始距离推算出的范围
     private float _initialDistance;
@@ -99,6 +85,8 @@ public class test : MonoBehaviour
             globeRoot = transform;
         if (targetCamera == null)
             targetCamera = Camera.main;
+        if (expansion == null)
+            expansion = FindFirstObjectByType<GlobeExpansionController>();
     }
 
     private void Start()
@@ -131,8 +119,9 @@ public class test : MonoBehaviour
             return;
 
         // 随缩放阶段性调整俯仰：以初始距离为基准，每偏离一个缩放步长(zoomSpeed)加 zoomTiltDelta 度
+        // zoomTiltDelta 可正可负（负值反向）
         float extraPitch = 0f;
-        if (zoomSpeed > 0.0001f && zoomTiltDelta > 0f)
+        if (zoomSpeed > 0.0001f && Mathf.Abs(zoomTiltDelta) > 0.0001f)
         {
             float currentDistance = toCenter.magnitude;
             float steps = (_initialDistance - currentDistance) / zoomSpeed;
@@ -155,55 +144,42 @@ public class test : MonoBehaviour
         HandleSelectButton(mouse, mousePos); // 左键：点击选中/取消
     }
 
-    /// <summary>右键按住拖动旋转球体，松开后交给惯性。</summary>
+    /// <summary>右键按住拖动旋转球体，松开即停。（松手惯性为 TODO，未来再做）</summary>
     private void HandleRotateButton(Mouse mouse)
     {
         if (mouse.rightButton.wasPressedThisFrame)
-        {
             _isDragging = true;
-            _angularVelocity = Vector3.zero; // 抓住球体时清除惯性
-        }
 
         if (mouse.rightButton.wasReleasedThisFrame)
-            _isDragging = false; // 松开 → 惯性接管并逐渐停下
+            _isDragging = false;
 
         if (_isDragging)
             RotateFromDrag(mouse);
-        else
-            ApplyInertia();
     }
 
-    /// <summary>左键点击选中/取消格子（不旋转）。</summary>
+    /// <summary>左键点击切换格子占领状态（不旋转）。</summary>
     private void HandleSelectButton(Mouse mouse, Vector2 mousePos)
     {
         if (mouse.leftButton.wasPressedThisFrame)
         {
             _pointerDown = true;
             _pointerDownPos = mousePos;
-            bool overUI = IsPointerOverUI();
             // 记录按下时命中的格子，供松手时判定点击
-            _pressedOnCell = !overUI && RaycastCell(mousePos, out _pressedCell);
-            if (debugClicks)
-                Debug.Log($"[Select] 左键按下 pos={mousePos} overUI={overUI} 命中格子={_pressedOnCell}");
+            _pressedCell = null;
+            if (!IsPointerOverUI())
+                RaycastCell(mousePos, out _pressedCell);
         }
 
         if (mouse.leftButton.wasReleasedThisFrame)
         {
-            float moved = (mousePos - _pointerDownPos).magnitude;
-            // 命中格子且未大幅移动 → 视为一次点击 → 切换该格选中
-            if (_pointerDown && _pressedOnCell && _pressedCell != null && moved <= dragThreshold)
+            // 命中格子且未大幅移动 → 视为一次点击 → 切换该格占领
+            if (_pointerDown && _pressedCell != null && expansion != null &&
+                (mousePos - _pointerDownPos).magnitude <= dragThreshold)
             {
-                _pressedCell.ToggleSelected(selectedColor);
-                if (debugClicks)
-                    Debug.Log($"[Select] 切换格子 id={_pressedCell.CellId} 选中={_pressedCell.IsSelected}");
-            }
-            else if (debugClicks && _pointerDown)
-            {
-                Debug.Log($"[Select] 未选中（命中格子={_pressedOnCell} 位移={moved:F1} 阈值={dragThreshold}）");
+                expansion.ToggleOccupied(_pressedCell);
             }
 
             _pointerDown = false;
-            _pressedOnCell = false;
             _pressedCell = null;
         }
     }
@@ -212,10 +188,7 @@ public class test : MonoBehaviour
     {
         Vector2 delta = mouse.delta.ReadValue();
         if (delta.sqrMagnitude <= 0f)
-        {
-            _angularVelocity = Vector3.zero; // 停住不动
             return;
-        }
 
         // 旋转轴来自相机，而不是固定世界轴——保证拖动方向在任意旋转后仍然直观
         Vector3 camUp = targetCamera.transform.up;
@@ -231,12 +204,6 @@ public class test : MonoBehaviour
 
         // 新的相机空间旋转叠加在当前旋转之前，保持拖动方向一致
         globeRoot.rotation = deltaRot * globeRoot.rotation;
-
-        // 记录角速度供松手后的惯性使用
-        deltaRot.ToAngleAxis(out float angle, out Vector3 axis);
-        if (angle > 180f) angle -= 360f; // 归一化到 [-180,180]
-        if (Time.deltaTime > 0f && !float.IsInfinity(axis.x))
-            _angularVelocity = axis * (angle / Time.deltaTime);
     }
 
     // ============================================================
@@ -244,31 +211,18 @@ public class test : MonoBehaviour
     // ============================================================
     /// <summary>
     /// 从屏幕点发射线，返回最近的、带 GlobeCellView 的格子。
-    /// 用 RaycastAll 过滤：即使底球等其它碰撞体挡在前面，也能命中最近的格子；
-    /// 背面格子距离更远，因此仍然选不到（正面格子总是更近）。
+    /// 用 RaycastAll 过滤：即使底球等其它碰撞体挡在前面也能选到格子；
+    /// 背面格子距离更远，正面格子总是更近，因此背面选不到。
     /// </summary>
     private bool RaycastCell(Vector2 screenPos, out GlobeCellView view)
     {
         view = null;
-
         if (targetCamera == null)
-        {
-            if (debugClicks) Debug.LogWarning("[Select] targetCamera 为空，无法发射线");
             return false;
-        }
 
         Ray ray = targetCamera.ScreenPointToRay(screenPos);
-        if (debugClicks) Debug.DrawRay(ray.origin, ray.direction * 1000f, Color.yellow, 1f);
-
         RaycastHit[] hits = Physics.RaycastAll(ray, Mathf.Infinity);
-        if (hits.Length == 0)
-        {
-            if (debugClicks)
-                Debug.Log("[Select] 射线没有命中任何碰撞体。确认：格子已生成且带 MeshCollider，且当前是 DualCells 显示模式（格子层激活）。");
-            return false;
-        }
 
-        // 取最近的、带 GlobeCellView 的碰撞体（忽略底球等非格子碰撞体）
         float nearest = float.MaxValue;
         for (int i = 0; i < hits.Length; i++)
         {
@@ -279,14 +233,6 @@ public class test : MonoBehaviour
             }
         }
 
-        if (debugClicks)
-        {
-            if (view != null)
-                Debug.Log($"[Select] 命中格子 '{view.name}' id={view.CellId}（射线共命中 {hits.Length} 个碰撞体）");
-            else
-                Debug.Log($"[Select] 射线命中 {hits.Length} 个碰撞体，但都不是格子（如底球）。第一个='{hits[0].collider.name}'");
-        }
-
         return view != null;
     }
 
@@ -294,23 +240,6 @@ public class test : MonoBehaviour
     {
         // 指针在 UI 上时不进行选择（遵守 EventSystem 检查）
         return EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
-    }
-
-    private void ApplyInertia()
-    {
-        float speed = _angularVelocity.magnitude;
-        if (speed <= minInertiaSpeed)
-        {
-            _angularVelocity = Vector3.zero;
-            return;
-        }
-
-        // 继续按当前角速度旋转
-        Vector3 axis = _angularVelocity / speed;
-        globeRoot.rotation = Quaternion.AngleAxis(speed * Time.deltaTime, axis) * globeRoot.rotation;
-
-        // 帧率无关的指数衰减
-        _angularVelocity *= Mathf.Exp(-inertiaDamping * Time.deltaTime);
     }
 
     // ============================================================

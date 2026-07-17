@@ -280,6 +280,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 169017358}
+  - component: {fileID: 169017359}
   m_Layer: 0
   m_Name: GameManager
   m_TagString: Untagged
@@ -302,6 +303,21 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &169017359
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 169017356}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6347bcc9904e2c14e8690ad0cda58205, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GlobalExpansion.Globe.GlobeExpansionController
+  generator: {fileID: 527547287}
+  occupiedColor: {r: 0.2, g: 0.5, b: 1, a: 1}
+  invasionRatePerEdge: 0.016666668
 --- !u!1 &330585543
 GameObject:
   m_ObjectHideFlags: 0
@@ -615,14 +631,12 @@ MonoBehaviour:
   globeRoot: {fileID: 0}
   targetCamera: {fileID: 330585545}
   rotationSpeed: 0.2
-  inertiaDamping: 5
-  minInertiaSpeed: 1
   zoomSpeed: 2
   minDistanceFactor: 0.4
   maxDistanceFactor: 2.5
   zoomSmooth: 10
   zoomTiltDelta: -1
-  selectedColor: {r: 0.2, g: 0.5, b: 1, a: 1}
+  expansion: {fileID: 0}
   dragThreshold: 8
 --- !u!114 &527547287
 MonoBehaviour:
