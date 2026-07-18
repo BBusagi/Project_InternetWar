@@ -59,6 +59,9 @@ namespace GlobalExpansion.Globe
         [Tooltip("Log topology validation (pentagon count, neighbor counts, bidirectionality) after generation.")]
         [SerializeField] private bool validateTopology = true;
 
+        [Tooltip("Log generation events (params, cache hits, cell counts).")]
+        [SerializeField] private bool debugLog = true;
+
         // --- 生成中间数据 ---
         private readonly List<Vector3> _positions = new List<Vector3>(); // Icosphere 顶点（已归一化到 radius）
         private readonly Dictionary<long, int> _midpointCache = new Dictionary<long, int>();
@@ -80,9 +83,29 @@ namespace GlobalExpansion.Globe
         private readonly List<GlobeCellView> _cellViews = new List<GlobeCellView>();
         public IReadOnlyList<GlobeCellView> CellViews => _cellViews;
 
+        // --- 缓存：只有生成参数（细分/半径/抬高倍数）变化时才重新生成 ---
+        private bool _generated;
+        private int _lastSubdivisions = -1;
+        private float _lastRadius = float.NaN;
+        private float _lastCellScale = float.NaN;
+
+        /// <summary>每次实际生成自增，供其它系统（如扩张控制器）检测网格是否已重建。</summary>
+        public int GenerationVersion { get; private set; }
+
         private void Start()
         {
-            Generate();
+            EnsureGenerated();
+        }
+
+        private void Update()
+        {
+            // 运行时检测到球型基体大小（半径/细分/抬高倍数）变化才重新生成
+            if (_generated && ParamsChanged())
+            {
+                if (debugLog)
+                    Debug.Log("[GlobeGenerator] 生成参数变化，重新生成网格。");
+                Generate();
+            }
         }
 
         private void OnValidate()
@@ -92,11 +115,33 @@ namespace GlobalExpansion.Globe
                 ApplyDisplayMode();
         }
 
+        /// <summary>已按当前参数生成过则命中缓存直接返回，否则生成。</summary>
+        public void EnsureGenerated()
+        {
+            if (_generated && _cellViews.Count > 0 && !ParamsChanged())
+            {
+                if (debugLog)
+                    Debug.Log($"[GlobeGenerator] 命中缓存，跳过生成（{_cellViews.Count} 格）。");
+                return;
+            }
+            Generate();
+        }
+
+        private bool ParamsChanged()
+        {
+            return _lastSubdivisions != subdivisions
+                   || !Mathf.Approximately(_lastRadius, radius)
+                   || !Mathf.Approximately(_lastCellScale, cellRadiusScale);
+        }
+
         [ContextMenu("Generate")]
         public void Generate()
         {
             if (cellParent == null)
                 cellParent = transform;
+
+            if (debugLog)
+                Debug.Log($"[GlobeGenerator] 生成网格 sub={subdivisions} radius={radius} scale={cellRadiusScale}");
 
             ClearExistingLayers();
             EnsureMaterials();
@@ -113,6 +158,13 @@ namespace GlobalExpansion.Globe
 
             ApplyDisplayMode();
 
+            // 记录本次生成参数用于缓存判断
+            _generated = true;
+            _lastSubdivisions = subdivisions;
+            _lastRadius = radius;
+            _lastCellScale = cellRadiusScale;
+            GenerationVersion++;
+
             if (validateTopology)
                 ValidateTopology();
         }
@@ -124,6 +176,8 @@ namespace GlobalExpansion.Globe
                 cellParent = transform;
             ClearExistingLayers();
             _cells.Clear();
+            _cellViews.Clear();
+            _generated = false;
         }
 
         // ============================================================
@@ -324,7 +378,11 @@ namespace GlobalExpansion.Globe
             neighbors[b].Add(a);
         }
 
-        /// <summary>把格子角点在中心点切平面内按角度排好序，并保证朝外缠绕。</summary>
+        /// <summary>
+        /// 把格子角点在中心点切平面内按角度排好序。
+        /// 基向量 (tangent, bitangent, normal) 为右手系（cross(tangent,bitangent)=normal），
+        /// 因此按 atan2 升序排序即为绕 +normal 的逆时针（朝外）顺序，无需再做缠绕反转。
+        /// </summary>
         private static Vector3[] SortCornersAroundNormal(List<int> adjFaces, Vector3[] centroids, Vector3 center, Vector3 normal)
         {
             Vector3 tangent = Vector3.Cross(normal, Vector3.up);
@@ -347,13 +405,6 @@ namespace GlobalExpansion.Globe
             Vector3[] corners = new Vector3[k];
             for (int i = 0; i < k; i++)
                 corners[i] = entries[i].pos;
-
-            if (k >= 3)
-            {
-                Vector3 faceNormal = Vector3.Cross(corners[1] - corners[0], corners[2] - corners[0]);
-                if (Vector3.Dot(faceNormal, normal) < 0f)
-                    System.Array.Reverse(corners);
-            }
             return corners;
         }
 
@@ -545,15 +596,37 @@ namespace GlobalExpansion.Globe
             int pentagons = 0;
             int badNeighborCount = 0;
             int nonBidirectional = 0;
+            int badCornerCount = 0; // 角点数不是 5 或 6
+            int degenerate = 0;     // 面积近 0 或有重合角点
 
             var byId = new Dictionary<int, GlobeCellData>(_cells.Count);
             foreach (var c in _cells)
                 byId[c.Id] = c;
 
+            var pentagonIds = new List<int>();
+
             foreach (var c in _cells)
             {
                 if (c.CellType == CellType.Pentagon)
+                {
                     pentagons++;
+                    pentagonIds.Add(c.Id);
+                }
+
+                // 角点数应为 5（五边形）或 6（六边形）
+                int corners = c.PolygonVertices != null ? c.PolygonVertices.Length : 0;
+                if (corners != 5 && corners != 6)
+                {
+                    badCornerCount++;
+                    Debug.LogWarning($"[GlobeGenerator] 格子 {c.Id} 角点数异常={corners}（应为5或6）——可能是奇怪的黄色点来源。");
+                }
+
+                // 退化多边形检测（面积近 0 / 重合角点）——这类会渲染成奇怪的点/尖刺
+                if (IsDegenerate(c.PolygonVertices))
+                {
+                    degenerate++;
+                    Debug.LogWarning($"[GlobeGenerator] 格子 {c.Id}({c.CellType}) 多边形退化（面积近 0 或角点重合）。");
+                }
 
                 int expected = c.CellType == CellType.Pentagon ? 5 : 6;
                 if (c.NeighborIds.Count != expected)
@@ -568,12 +641,41 @@ namespace GlobalExpansion.Globe
 
             string msg =
                 $"[GlobeGenerator] 细分级={subdivisions} 格子总数={_cells.Count} " +
-                $"五边形={pentagons}(应为12) 邻居数异常={badNeighborCount} 非双向邻接={nonBidirectional}";
+                $"五边形={pentagons}(应为12) 角点数异常={badCornerCount} 退化格子={degenerate} " +
+                $"邻居数异常={badNeighborCount} 非双向邻接={nonBidirectional}";
 
-            if (pentagons == 12 && badNeighborCount == 0 && nonBidirectional == 0)
+            bool ok = pentagons == 12 && badNeighborCount == 0 && nonBidirectional == 0
+                      && badCornerCount == 0 && degenerate == 0;
+            if (ok)
                 Debug.Log(msg + "  ✅ 拓扑正确");
             else
                 Debug.LogError(msg + "  ❌ 拓扑异常");
+
+            if (debugLog)
+                Debug.Log($"[GlobeGenerator] 五边形格子 Id: {string.Join(",", pentagonIds)}");
+        }
+
+        /// <summary>多边形是否退化：任意相邻角点重合，或总面积近 0。</summary>
+        private static bool IsDegenerate(Vector3[] corners)
+        {
+            if (corners == null || corners.Length < 3)
+                return true;
+
+            // 相邻角点重合
+            for (int i = 0; i < corners.Length; i++)
+            {
+                Vector3 a = corners[i];
+                Vector3 b = corners[(i + 1) % corners.Length];
+                if ((a - b).sqrMagnitude < 1e-8f)
+                    return true;
+            }
+
+            // 三角扇总面积
+            float area2 = 0f;
+            Vector3 c0 = corners[0];
+            for (int i = 1; i < corners.Length - 1; i++)
+                area2 += Vector3.Cross(corners[i] - c0, corners[i + 1] - c0).magnitude;
+            return area2 < 1e-6f;
         }
     }
 }

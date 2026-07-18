@@ -318,6 +318,7 @@ MonoBehaviour:
   generator: {fileID: 527547287}
   occupiedColor: {r: 0.2, g: 0.5, b: 1, a: 1}
   invasionRatePerEdge: 0.016666668
+  debugLog: 1
 --- !u!1 &330585543
 GameObject:
   m_ObjectHideFlags: 0
@@ -405,7 +406,7 @@ Transform:
   m_GameObject: {fileID: 330585543}
   serializedVersion: 2
   m_LocalRotation: {x: 0.17364816, y: -0, z: -0, w: 0.9848078}
-  m_LocalPosition: {x: 0, y: 5, z: -4}
+  m_LocalPosition: {x: 0, y: 5.5, z: -4}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -635,9 +636,10 @@ MonoBehaviour:
   minDistanceFactor: 0.4
   maxDistanceFactor: 2.5
   zoomSmooth: 10
-  zoomTiltDelta: -1
+  zoomTiltDelta: -10
   expansion: {fileID: 0}
   dragThreshold: 8
+  debugClicks: 0
 --- !u!114 &527547287
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -663,6 +665,7 @@ MonoBehaviour:
   triangleEdgeColor: {r: 0.55, g: 0.85, b: 0.95, a: 1}
   cellBorderColor: {r: 0.05, g: 0.06, b: 0.08, a: 1}
   validateTopology: 1
+  debugLog: 1
 --- !u!1 &832575517
 GameObject:
   m_ObjectHideFlags: 0

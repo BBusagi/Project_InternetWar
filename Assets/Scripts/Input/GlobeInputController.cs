@@ -52,6 +52,9 @@ public class GlobeInputController : MonoBehaviour
     [Tooltip("Pixel movement above which a left press counts as a drag, not a click.")]
     [SerializeField] private float dragThreshold = 8f;
 
+    [Tooltip("Log click raycast hit/miss to the Console.")]
+    [SerializeField] private bool debugClicks = false;
+
     // ============================================================
     // 运行时状态
     // ============================================================
@@ -168,6 +171,11 @@ public class GlobeInputController : MonoBehaviour
             _pressedCell = null;
             if (!IsPointerOverUI())
                 RaycastCell(mousePos, out _pressedCell);
+
+            if (debugClicks)
+                Debug.Log(_pressedCell != null
+                    ? $"[Input] 左键命中格子 id={_pressedCell.CellId}"
+                    : "[Input] 左键未命中格子（空白或 UI）");
         }
 
         if (mouse.leftButton.wasReleasedThisFrame)

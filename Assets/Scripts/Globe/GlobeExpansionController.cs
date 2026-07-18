@@ -27,9 +27,13 @@ namespace GlobalExpansion.Globe
         [Range(0f, 0.2f)]
         [SerializeField] private float invasionRatePerEdge = 1f / 60f;
 
+        [Header("Debug")]
+        [Tooltip("Log occupation toggles and controller binding.")]
+        [SerializeField] private bool debugLog = true;
+
         // 邻居查找：cellId -> view
         private readonly Dictionary<int, GlobeCellView> _lookup = new Dictionary<int, GlobeCellView>();
-        private int _lookupCount = -1;
+        private int _lookupVersion = -1;
 
         /// <summary>占领色（供输入控制器点击时使用，保持颜色一致）。</summary>
         public Color OccupiedColor => occupiedColor;
@@ -38,13 +42,25 @@ namespace GlobalExpansion.Globe
         {
             if (generator == null)
                 generator = FindFirstObjectByType<GlobeGenerator>();
+
+            if (debugLog)
+            {
+                if (generator != null)
+                    Debug.Log("[Expansion] 已绑定 GlobeGenerator。");
+                else
+                    Debug.LogWarning("[Expansion] 未找到 GlobeGenerator，扩张不会运行。");
+            }
         }
 
         /// <summary>左键点击切换某个格子的占领状态（设置/取消种子）。</summary>
         public void ToggleOccupied(GlobeCellView cell)
         {
-            if (cell != null)
-                cell.ToggleOccupied(occupiedColor);
+            if (cell == null)
+                return;
+
+            cell.ToggleOccupied(occupiedColor);
+            if (debugLog)
+                Debug.Log($"[Expansion] 切换占领 id={cell.CellId} 占领={cell.IsOccupied}");
         }
 
         private void Update()
@@ -88,8 +104,8 @@ namespace GlobalExpansion.Globe
 
         private void RefreshLookup(IReadOnlyList<GlobeCellView> views)
         {
-            // 数量没变时沿用缓存（重新生成网格后数量变化才重建）
-            if (_lookupCount == views.Count)
+            // 网格重新生成时（版本号变化）才重建查找表，避免持有已销毁的旧格子引用
+            if (_lookupVersion == generator.GenerationVersion)
                 return;
 
             _lookup.Clear();
@@ -98,7 +114,10 @@ namespace GlobalExpansion.Globe
                 if (views[i] != null)
                     _lookup[views[i].CellId] = views[i];
             }
-            _lookupCount = views.Count;
+            _lookupVersion = generator.GenerationVersion;
+
+            if (debugLog)
+                Debug.Log($"[Expansion] 重建邻居查找表：{_lookup.Count} 格（版本 {_lookupVersion}）。");
         }
     }
 }
