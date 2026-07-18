@@ -32,6 +32,9 @@ namespace GlobalExpansion.Globe
         [Tooltip("Cell radius scale above the sphere radius, to avoid Z-fighting with lower layers.")]
         [SerializeField] private float cellRadiusScale = 1.01f;
 
+        [Tooltip("Cell fill 0.8-1.0. Below 1.0 shrinks each cell toward its center, leaving a gap so neighboring cells no longer share edges (removes Z-fighting specks). 1.0 = cells touch.")]
+        [SerializeField, Range(0.8f, 1f)] private float cellFill = 0.94f;
+
         [Header("Visualization")]
         [Tooltip("Which layer to show: base sphere / triangle net / dual cells. Switchable at runtime.")]
         [SerializeField] private GlobeDisplayMode displayMode = GlobeDisplayMode.DualCells;
@@ -88,6 +91,7 @@ namespace GlobalExpansion.Globe
         private int _lastSubdivisions = -1;
         private float _lastRadius = float.NaN;
         private float _lastCellScale = float.NaN;
+        private float _lastCellFill = float.NaN;
 
         /// <summary>每次实际生成自增，供其它系统（如扩张控制器）检测网格是否已重建。</summary>
         public int GenerationVersion { get; private set; }
@@ -131,7 +135,8 @@ namespace GlobalExpansion.Globe
         {
             return _lastSubdivisions != subdivisions
                    || !Mathf.Approximately(_lastRadius, radius)
-                   || !Mathf.Approximately(_lastCellScale, cellRadiusScale);
+                   || !Mathf.Approximately(_lastCellScale, cellRadiusScale)
+                   || !Mathf.Approximately(_lastCellFill, cellFill);
         }
 
         [ContextMenu("Generate")]
@@ -163,6 +168,7 @@ namespace GlobalExpansion.Globe
             _lastSubdivisions = subdivisions;
             _lastRadius = radius;
             _lastCellScale = cellRadiusScale;
+            _lastCellFill = cellFill;
             GenerationVersion++;
 
             if (validateTopology)
@@ -365,8 +371,12 @@ namespace GlobalExpansion.Globe
                 data.NeighborIds.AddRange(vertexNeighbors[v]);
                 _cells.Add(data);
 
-                CreateCellObject(data, normal * cellRadius);
-                AppendCellBorder(borderVerts, borderLineIndices, corners, radius * (cellRadiusScale + 0.001f) / cellRadius);
+                // 渲染用角点向格心内缩，留出缝隙 → 相邻格子不再共享边 → 消除黄色 Z-fighting
+                Vector3 cellCenter = normal * cellRadius;
+                Vector3[] renderCorners = InsetCorners(corners, cellCenter, cellFill);
+
+                CreateCellObject(data, cellCenter, renderCorners);
+                AppendCellBorder(borderVerts, borderLineIndices, renderCorners, radius * (cellRadiusScale + 0.001f) / cellRadius);
             }
 
             BuildEdgeLines("CellBorders", _cellsRoot, borderVerts, borderLineIndices, 1f, _cellBorderMaterial);
@@ -424,9 +434,21 @@ namespace GlobalExpansion.Globe
         // ============================================================
         // GameObject / 网格构建工具
         // ============================================================
-        private void CreateCellObject(GlobeCellData data, Vector3 centerPos)
+        /// <summary>把角点朝格心内缩 fill 比例（1.0 不缩），返回新数组。</summary>
+        private static Vector3[] InsetCorners(Vector3[] corners, Vector3 center, float fill)
         {
-            Mesh mesh = BuildFanMesh(data.PolygonVertices, centerPos);
+            if (fill >= 0.999f)
+                return corners;
+
+            Vector3[] result = new Vector3[corners.Length];
+            for (int i = 0; i < corners.Length; i++)
+                result[i] = Vector3.LerpUnclamped(center, corners[i], fill);
+            return result;
+        }
+
+        private void CreateCellObject(GlobeCellData data, Vector3 centerPos, Vector3[] renderCorners)
+        {
+            Mesh mesh = BuildFanMesh(renderCorners, centerPos);
 
             GameObject go = new GameObject($"Cell_{data.Id}_{data.CellType}");
             go.transform.SetParent(_cellsRoot, false);
